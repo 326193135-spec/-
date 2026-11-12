@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>A股主板涨停多日对比 & 高位卡位追踪看板</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            mono: ['JetBrains Mono', 'SFMono-Regular', 'Consolas', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.3); border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, 0.5); }
+    .stock-card { transition: all 0.16s ease; }
+    .stock-card:hover { transform: translateY(-1px); }
+    .dimmed { opacity: 0.22 !important; filter: grayscale(70%); }
+    .highlighted {
+      box-shadow: 0 0 0 2px #f59e0b, 0 4px 14px rgba(245, 158, 11, 0.35) !important;
+      z-index: 20;
+    }
+    @keyframes pulse-border {
+      0%, 100% { border-color: rgba(245, 158, 11, 0.9); }
+      50% { border-color: rgba(239, 68, 68, 0.45); }
+    }
+    .kawei-badge { animation: pulse-border 2s infinite; }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-900 dark:bg-[#0b0f19] dark:text-slate-100 min-h-screen flex flex-col selection:bg-rose-500 selection:text-white">
+
+  <!-- 顶部导航栏 -->
+  <header class="sticky top-0 z-40 border-b border-slate-200 dark:border-slate-800 bg-white/90 dark:bg-[#0f1623]/95 backdrop-blur px-4 py-3">
+    <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
+      <div class="flex items-center gap-3">
+        <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-rose-600 to-amber-500 flex items-center justify-center text-white font-bold shadow">
+          板
+        </div>
+        <div>
+          <div class="flex items-center gap-2">
+            <h1 class="text-base md:text-lg font-bold tracking-tight">A股主板涨停多日对比 & 高位卡位雷达</h1>
+            <span id="data-source-badge" class="text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/30">
+              正在连接 data.json...
+            </span>
+          </div>
+          <p class="text-xs text-slate-500 dark:text-slate-400">
+            沪深主板（剔除ST/科创/创业） · 阶梯晋级矩阵 · 高位断板±3分钟同刻卡位追踪
+          </p>
+        </div>
+      </div>
+
+      <!-- 控制栏 -->
+      <div class="flex flex-wrap items-center gap-2 text-xs">
+        <input
+          id="search-input"
+          type="text"
+          placeholder="搜索代码 / 名称 / 题材..."
+          class="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none focus:border-rose-500 w-44"
+        />
+
+        <select id="sector-filter" class="px-2.5 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 focus:outline-none">
+          <option value="ALL">全部题材板块</option>
+        </select>
+
+        <button id="btn-only-kawei" class="px-3 py-1.5 rounded-lg border border-amber-500/50 bg-amber-500/10 text-amber-600 dark:text-amber-400 font-medium hover:bg-amber-500/20 transition">
+          ⚡ 仅看同刻卡位
+        </button>
+
+        <button id="btn-reload" class="px-3 py-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 transition">
+          刷新接口
+        </button>
+
+        <button id="btn-export-csv" class="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-700 text-white font-medium transition">
+          导出复盘CSV
+        </button>
+
+        <button id="btn-theme" class="p-1.5 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800" title="切换深浅主题">
+          🌓
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 高位断板 & 同刻卡位战情条 -->
+  <section class="border-b border-slate-200 dark:border-slate-800 bg-slate-100/70 dark:bg-[#111827] px-4 py-2.5">
+    <div class="max-w-[1600px] mx-auto flex flex-col lg:flex-row lg:items-center justify-between gap-2">
+      <div class="flex items-center gap-2 shrink-0">
+        <span class="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-600/15 text-emerald-600 dark:text-emerald-400 text-xs font-bold border border-emerald-500/30">
+          📉 高位断板监控 (≥3板)
+        </span>
+        <span id="latest-date-label" class="text-xs font-mono text-slate-500 dark:text-slate-400">--</span>
+      </div>
+      <div id="broken-high-bar" class="flex flex-wrap items-center gap-2 text-xs">
+        <!-- 动态渲染最新一日高位断板股 -->
+      </div>
+    </div>
+  </section>
+
+  <!-- 主体多日对比矩阵 -->
+  <main class="flex-1 max-w-[1600px] w-full mx-auto px-4 py-4 relative overflow-x-auto">
+    <div id="matrix-wrapper" class="relative min-w-[1150px]">
+      <!-- SVG 跨日连线层 -->
+      <svg id="connector-svg" class="absolute inset-0 w-full h-full pointer-events-none z-10"></svg>
+
+      <!-- 矩阵表格 -->
+      <div id="matrix-container" class="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden bg-white dark:bg-[#0f1623] shadow-sm">
+        <!-- 动态生成表头与连板梯队行 -->
+      </div>
+    </div>
+  </main>
+
+  <!-- 底部图例与详情抽屉提示 -->
+  <footer class="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-[#0f1623] px-4 py-2.5 text-xs text-slate-500 dark:text-slate-400">
+    <div class="max-w-[1600px] mx-auto flex flex-wrap items-center justify-between gap-3">
+      <div class="flex flex-wrap items-center gap-4">
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-rose-600 inline-block"></span> 涨停晋级</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm border border-amber-500 bg-amber-500/20 inline-block"></span> ⚡同刻卡位（高位断板±3分钟内上板）</span>
+        <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-600 inline-block"></span> 高位断板预警</span>
+        <span>💡 提示：鼠标悬停或点击任意股票，自动高亮其5日连板晋级/断板轨迹连线</span>
+      </div>
+      <div id="stats-summary" class="font-mono"></div>
+    </div>
+  </footer>
+
+  <!-- 个股多日轨迹详情弹窗 -->
+  <div id="detail-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+    <div class="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl max-w-lg w-full p-5 shadow-2xl">
+      <div class="flex items-start justify-between border-b border-slate-200 dark:border-slate-800 pb-3">
+        <div>
+          <div class="flex items-center gap-2">
+            <h3 id="modal-title" class="text-lg font-bold"></h3>
+            <span id="modal-code" class="font-mono text-xs px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800"></span>
+            <span id="modal-sector" class="text-xs px-2 py-0.5 rounded bg-rose-500/10 text-rose-500 font-medium"></span>
+          </div>
+          <p class="text-xs text-slate-500 mt-1">近5个交易日连板晋级与卡位轨迹明细</p>
+        </div>
+        <button id="modal-close" class="text-slate-400 hover:text-slate-600 dark:hover:text-white text-lg">✕</button>
+      </div>
+      <div id="modal-body" class="py-4 space-y-2.5 text-xs"></div>
+    </div>
+  </div>
+
+<script>
+  // 内置演示兜底数据（当尚未运行 fetch_data.py 生成 data.json 时展示）
+  const FALLBACK_DATA = {
+    "20261106": {
+      "limit_up": [
+        { "code": "603667", "name": "五洲新春", "boards": 2, "time": "09:35", "sector": "人形机器人", "status": "limit_up", "kawei_target": null },
+        { "code": "001696", "name": "宗申动力", "boards": 2, "time": "09:42", "sector": "低空经济", "status": "limit_up", "kawei_target": null },
+        { "code": "002085", "name": "万丰奥威", "boards": 1, "time": "10:15", "sector": "低空经济", "status": "limit_up", "kawei_target": null },
+        { "code": "000099", "name": "中信海直", "boards": 1, "time": "13:20", "sector": "低空经济", "status": "limit_up", "kawei_target": null }
+      ],
+      "broken_high": []
+    },
+    "20261109": {
+      "limit_up": [
+        { "code": "603667", "name": "五洲新春", "boards": 3, "time": "09:31", "sector": "人形机器人", "status": "limit_up", "kawei_target": null },
+        { "code": "001696", "name": "宗申动力", "boards": 3, "time": "09:38", "sector": "低空经济", "status": "limit_up", "kawei_target": null },
+        { "code": "002085", "name": "万丰奥威", "boards": 2, "time": "09:56", "sector": "低空经济", "status": "limit_up", "kawei_target": null },
+        { "code": "000099", "name": "中信海直", "boards": 2, "time": "10:08", "sector": "低空经济", "status": "limit_up", "kawei_target": null },
+        { "code": "603728", "name": "鸣志电器", "boards": 1, "time": "10:30", "sector": "人形机器人", "status": "limit_up", "kawei_target": null }
+      ],
+      "broken_high": []
+    },
+    "20261110": {
+      "limit_up": [
+        { "code": "603667", "name": "五洲新春", "boards": 4, "time": "09:30", "sector": "人形机器人", "status": "limit_up", "kawei_target": null },
+        { "code": "001696", "name": "宗申动力", "boards": 4, "time": "09:45", "sector": "低空经济", "status": "limit_up", "kawei_target": null },
+        { "code": "000099", "name": "中信海直", "boards": 3, "time": "10:12", "sector": "低空经济", "status": "limit_up", "kawei_target": null },
+        { "code": "603728", "name": "鸣志电器", "boards": 2, "time": "09:50", "sector": "人形机器人", "status": "limit_up", "kawei_target": null },
+        { "code": "002594", "name": "比亚迪链", "boards": 1, "time": "11:05", "sector": "汽车整车", "status": "limit_up", "kawei_target": null }
+      ],
+      "broken_high": []
+    },
+    "20261111": {
+      "limit_up": [
+        { "code": "603667", "name": "五洲新春", "boards": 5, "time": "09:32", "sector": "人形机器人", "status": "limit_up", "kawei_target": null },
+        { "code": "000099", "name": "中信海直", "boards": 4, "time": "10:14", "sector": "低空经济", "status": "limit_up", "kawei_target": "⚡10:14卡位 宗申动力(4板断)" },
+        { "code": "603728", "name": "鸣志电器", "boards": 3, "time": "09:49", "sector": "人形机器人", "status": "limit_up", "kawei_target": null },
+        { "code": "002085", "name": "万丰奥威", "boards": 1, "time": "10:16", "sector": "低空经济", "status": "limit_up", "kawei_target": "⚡10:16卡位 宗申动力(4板断)" }
+      ],
+      "broken_high": [
+        { "code": "001696", "name": "宗申动力", "yesterday_boards": 4, "break_time": "10:15", "sector": "低空经济" }
+      ]
+    },
+    "20261112": {
+      "limit_up": [
+        { "code": "603667", "name": "五洲新春", "boards": 6, "time": "09:30", "sector": "人形机器人", "status": "limit_up", "kawei_target": null },
+        { "code": "000099", "name": "中信海直", "boards": 5, "time": "09:56", "sector": "低空经济", "status": "limit_up", "kawei_target": "⚡09:56卡位 鸣志电器(3板断)" },
+        { "code": "002085", "name": "万丰奥威", "boards": 2, "time": "09:54", "sector": "低空经济", "status": "limit_up", "kawei_target": "⚡09:54卡位 鸣志电器(3板断)" },
+        { "code": "600580", "name": "卧龙电驱", "boards": 1, "time": "09:55", "sector": "人形机器人", "status": "limit_up", "kawei_target": "⚡09:55卡位 鸣志电器(3板断)" },
+        { "code": "603019", "name": "中科曙光", "boards": 1, "time": "10:42", "sector": "算力芯片", "status": "limit_up", "kawei_target": null }
+      ],
+      "broken_high": [
+        { "code": "603728", "name": "鸣志电器", "yesterday_boards": 3, "break_time": "09:55", "sector": "人形机器人" }
+      ]
+    }
+  };
+
+  let rawData = {};
+  let sortedDates = [];
+  let onlyKawei = false;
+  let activeCode = null;
+
+  const TIERS = [
+    { key: '6+', label: '6连板+', min: 6, max: 99 },
+    { key: '5',  label: '5连板',  min: 5, max: 5 },
+    { key: '4',  label: '4连板',  min: 4, max: 4 },
+    { key: '3',  label: '3连板',  min: 3, max: 3 },
+    { key: '2',  label: '2连板',  min: 2, max: 2 },
+    { key: '1',  label: '首板',   min: 1, max: 1 }
+  ];
+
+  function formatDateDisplay(d) {
+    if (!d || d.length !== 8) return d;
+    return `${d.slice(0,4)}-${d.slice(4,6)}-${d.slice(6,8)}`;
+  }
+
+  async function loadData() {
+    const badge = document.getElementById('data-source-badge');
+    try {
+      const res = await fetch(`./data.json?t=${Date.now()}`);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const json = await res.json();
+      if (!json || Object.keys(json).length === 0) throw new Error('Empty JSON');
+      rawData = json;
+      badge.textContent = '● 已连接实时 data.json 接口';
+      badge.className = 'text-[11px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 font-medium border border-emerald-500/30';
+    } catch (e) {
+      rawData = FALLBACK_DATA;
+      badge.textContent = '⚠ 演示数据 (请运行 fetch_data.py 生成 data.json)';
+      badge.className = 'text-[11px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium border border-amber-500/30';
+    }
+
+    sortedDates = Object.keys(rawData).sort().slice(-5);
+    populateSectorFilter();
+    renderBrokenHighBar();
+    renderMatrix();
+  }
+
+  function populateSectorFilter() {
+    const select = document.getElementById('sector-filter');
+    const sectors = new Set();
+    sortedDates.forEach(d => {
+      (rawData[d].limit_up || []).forEach(s => s.sector && sectors.add(s.sector));
+    });
+    select.innerHTML = '<option value="ALL">全部题材板块</option>';
+    Array.from(sectors).sort().forEach(sec => {
+      const opt = document.createElement('option');
+      opt.value = sec;
+      opt.textContent = sec;
+      select.appendChild(opt);
+    });
+  }
+
+  function renderBrokenHighBar() {
+    const bar = document.getElementById('broken-high-bar');
+    const latestDate = sortedDates[sortedDates.length - 1];
+    document.getElementById('latest-date-label').textContent = latestDate ? `最新交易日: ${formatDateDisplay(latestDate)}` : '';
+
+    if (!latestDate) {
+      bar.innerHTML = '<span class="text-slate-400">暂无数据</span>';
+      return;
+    }
+
+    const brokenList = rawData[latestDate].broken_high || [];
+    if (brokenList.length === 0) {
+      bar.innerHTML = '<span class="text-slate-500 dark:text-slate-400">今日昨日≥3连板高位股全部晋级或无高位断板标的</span>';
+      return;
+    }
+
+    bar.innerHTML = brokenList.map(b => `
+      <div class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/35 text-emerald-700 dark:text-emerald-300 cursor-pointer hover:bg-emerald-500/20"
+           onclick="openStockModal('${b.code}')">
+        <span class="font-bold">${b.name}</span>
+        <span class="font-mono text-[11px] opacity-80">${b.code}</span>
+        <span class="px-1.5 py-0.2 rounded bg-emerald-600 text-white text-[10px] font-bold">昨${b.yesterday_boards}板断</span>
+        <span class="font-mono text-[11px] text-amber-600 dark:text-amber-400 font-semibold">⏰${b.break_time}炸/分歧</span>
+        <span class="text-[11px] opacity-75">[${b.sector}]</span>
+      </div>
+    `).join('');
+  }
+
+  function renderMatrix() {
+    const container = document.getElementById('matrix-container');
+    const keyword = document.getElementById('search-input').value.trim().toLowerCase();
+    const sectorVal = document.getElementById('sector-filter').value;
+
+    let totalZtToday = 0;
+    let totalKaweiToday = 0;
+    const latestDate = sortedDates[sortedDates.length - 1];
+
+    // 表头
+    let html = `
+      <div class="grid grid-cols-[110px_repeat(${sortedDates.length},minmax(0,1fr))] border-b border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-900/90 text-xs font-bold">
+        <div class="p-3 text-center border-r border-slate-200 dark:border-slate-800 text-slate-500">连板梯队</div>
+        ${sortedDates.map((d, idx) => {
+          const dayZt = (rawData[d].limit_up || []).length;
+          const dayBroken = (rawData[d].broken_high || []).length;
+          const isToday = idx === sortedDates.length - 1;
+          return `
+            <div class="p-2.5 border-r last:border-r-0 border-slate-200 dark:border-slate-800 flex items-center justify-between ${isToday ? 'bg-rose-500/5' : ''}">
+              <div>
+                <span class="font-mono ${isToday ? 'text-rose-600 dark:text-rose-400' : ''}">${formatDateDisplay(d)}</span>
+                ${isToday ? '<span class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-rose-600 text-white">最新</span>' : ''}
+              </div>
+              <div class="text-[11px] font-normal text-slate-500 dark:text-slate-400">
+                涨停<b class="text-rose-500 mx-0.5">${dayZt}</b> · 高断<b class="text-emerald-500 ml-0.5">${dayBroken}</b>
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+
+    // 梯队行
+    TIERS.forEach(tier => {
+      html += `
+        <div class="grid grid-cols-[110px_repeat(${sortedDates.length},minmax(0,1fr))] border-b last:border-b-0 border-slate-200 dark:border-slate-800/80">
+          <div class="p-3 border-r border-slate-200 dark:border-slate-800 flex flex-col items-center justify-center bg-slate-50/60 dark:bg-slate-900/40">
+            <span class="text-sm font-extrabold ${tier.min >= 4 ? 'text-rose-600 dark:text-rose-400' : tier.min >= 2 ? 'text-amber-600 dark:text-amber-400' : 'text-slate-600 dark:text-slate-300'}">
+              ${tier.label}
+            </span>
+          </div>
+      `;
+
+      sortedDates.forEach(d => {
+        const list = (rawData[d].limit_up || []).filter(item => {
+          const inTier = item.boards >= tier.min && item.boards <= tier.max;
+          if (!inTier) return false;
+          if (d === latestDate) {
+            totalZtToday++;
+            if (item.kawei_target) totalKaweiToday++;
+          }
+          if (onlyKawei && !item.kawei_target) return false;
+          if (sectorVal !== 'ALL' && item.sector !== sectorVal) return false;
+          if (keyword && !(`${item.code}${item.name}${item.sector}`.toLowerCase().includes(keyword))) return false;
+          return true;
+        });
+
+        // 按封板时间升序排列
+        list.sort((a, b) => a.time.localeCompare(b.time));
+
+        // 找出当日在该梯队对应昨日断板的高位标的，方便同列提示
+        const brokenInTier = (rawData[d].broken_high || []).filter(b => {
+          const targetBoard = b.yesterday_boards + 1;
+          return targetBoard >= tier.min && targetBoard <= tier.max;
+        });
+
+        html += `<div class="p-2 border-r last:border-r-0 border-slate-200 dark:border-slate-800/80 flex flex-col gap-1.5 min-h-[68px]">`;
+
+        // 渲染本列涨停股卡片
+        list.forEach(stock => {
+          const hasKawei = Boolean(stock.kawei_target);
+          html += `
+            <div
+              data-code="${stock.code}"
+              data-date="${d}"
+              onmouseenter="highlightStock('${stock.code}')"
+              onmouseleave="clearHighlight()"
+              onclick="openStockModal('${stock.code}')"
+              class="stock-card cursor-pointer rounded-lg p-2 border ${
+                hasKawei
+                  ? 'kawei-badge border-amber-500 bg-gradient-to-r from-rose-500/12 via-amber-500/12 to-transparent'
+                  : 'border-slate-200 dark:border-slate-800 bg-slate-50/90 dark:bg-slate-900/90 hover:border-rose-500/60'
+              }"
+            >
+              <div class="flex items-center justify-between gap-1">
+                <div class="flex items-center gap-1.5 truncate">
+                  <span class="font-bold text-xs text-slate-900 dark:text-slate-100 truncate">${stock.name}</span>
+                  <span class="font-mono text-[10px] text-slate-400">${stock.code}</span>
+                </div>
+                <span class="font-mono text-[11px] font-semibold text-rose-600 dark:text-rose-400 shrink-0">
+                  ${stock.time}
+                </span>
+              </div>
+              <div class="mt-1 flex items-center justify-between gap-1 text-[10px]">
+                <span class="px-1.5 py-0.2 rounded bg-slate-200/70 dark:bg-slate-800 text-slate-600 dark:text-slate-300 truncate max-w-[95px]">
+                  ${stock.sector}
+                </span>
+                ${stock.boards > 1 ? `<span class="font-bold text-rose-500">${stock.boards}板</span>` : '<span class="text-slate-400">首板</span>'}
+              </div>
+              ${hasKawei ? `
+                <div class="mt-1.5 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-700 dark:text-amber-300 text-[10px] font-semibold leading-tight">
+                  ${stock.kawei_target}
+                </div>
+              ` : ''}
+            </div>
+          `;
+        });
+
+        // 渲染该晋级高度位置上的断板幽灵提示卡片
+        if (!onlyKawei && sectorVal === 'ALL' && !keyword) {
+          brokenInTier.forEach(b => {
+            html += `
+              <div
+                data-code="${b.code}"
+                data-date="${d}"
+                onmouseenter="highlightStock('${b.code}')"
+                onmouseleave="clearHighlight()"
+                onclick="openStockModal('${b.code}')"
+                class="stock-card cursor-pointer rounded-lg px-2 py-1.5 border border-dashed border-emerald-500/50 bg-emerald-500/5 text-[11px] flex items-center justify-between"
+              >
+                <span class="text-emerald-600 dark:text-emerald-400 font-medium truncate">
+                  ✕ ${b.name} (${b.yesterday_boards}进${b.yesterday_boards+1}断)
+                </span>
+                <span class="font-mono text-[10px] text-emerald-600 dark:text-emerald-400 shrink-0">${b.break_time}</span>
+              </div>
+            `;
+          });
+        }
+
+        html += `</div>`;
+      });
+
+      html += `</div>`;
+    });
+
+    container.innerHTML = html;
+    document.getElementById('stats-summary').textContent = `最新交易日主板涨停: ${totalZtToday} 家 | 触发同刻卡位信号: ${totalKaweiToday} 家`;
+    if (activeCode) drawConnectors(activeCode);
+  }
+
+  function highlightStock(code) {
+    activeCode = code;
+    const cards = document.querySelectorAll('.stock-card');
+    cards.forEach(c => {
+      if (c.dataset.code === code) {
+        c.classList.add('highlighted');
+        c.classList.remove('dimmed');
+      } else {
+        c.classList.add('dimmed');
+        c.classList.remove('highlighted');
+      }
+    });
+    drawConnectors(code);
+  }
+
+  function clearHighlight() {
+    activeCode = null;
+    document.querySelectorAll('.stock-card').forEach(c => {
+      c.classList.remove('highlighted', 'dimmed');
+    });
+    document.getElementById('connector-svg').innerHTML = '';
+  }
+
+  function drawConnectors(code) {
+    const svg = document.getElementById('connector-svg');
+    const wrapperRect = document.getElementById('matrix-wrapper').getBoundingClientRect();
+    const matched = Array.from(document.querySelectorAll(`.stock-card[data-code="${code}"]`))
+      .sort((a, b) => a.dataset.date.localeCompare(b.dataset.date));
+
+    if (matched.length < 2) {
+      svg.innerHTML = '';
+      return;
+    }
+
+    let paths = '';
+    for (let i = 0; i < matched.length - 1; i++) {
+      const r1 = matched[i].getBoundingClientRect();
+      const r2 = matched[i + 1].getBoundingClientRect();
+      const x1 = r1.right - wrapperRect.left;
+      const y1 = r1.top + r1.height / 2 - wrapperRect.top;
+      const x2 = r2.left - wrapperRect.left;
+      const y2 = r2.top + r2.height / 2 - wrapperRect.top;
+      const cx = (x1 + x2) / 2;
+
+      paths += `
+        <path d="M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2} ${y2}"
+              fill="none" stroke="#f59e0b" stroke-width="2.5" stroke-dasharray="4 2" />
+        <circle cx="${x1}" cy="${y1}" r="4" fill="#f59e0b" />
+        <circle cx="${x2}" cy="${y2}" r="4" fill="#ef4444" />
+      `;
+    }
+    svg.innerHTML = paths;
+  }
+
+  function openStockModal(code) {
+    const modal = document.getElementById('detail-modal');
+    const body = document.getElementById('modal-body');
+    let stockName = code;
+    let stockSector = '';
+    const timeline = [];
+
+    sortedDates.forEach(d => {
+      const zt = (rawData[d].limit_up || []).find(s => s.code === code);
+      const br = (rawData[d].broken_high || []).find(b => b.code === code);
+      if (zt) {
+        stockName = zt.name;
+        stockSector = zt.sector;
+        timeline.push({ date: d, type: 'zt', boards: zt.boards, time: zt.time, kawei: zt.kawei_target });
+      } else if (br) {
+        stockName = br.name;
+        stockSector = br.sector;
+        timeline.push({ date: d, type: 'broken', yesterday_boards: br.yesterday_boards, time: br.break_time });
+      }
+    });
+
+    document.getElementById('modal-title').textContent = stockName;
+    document.getElementById('modal-code').textContent = code;
+    document.getElementById('modal-sector').textContent = stockSector;
+
+    body.innerHTML = timeline.map(item => {
+      if (item.type === 'zt') {
+        return `
+          <div class="p-3 rounded-lg border border-rose-500/30 bg-rose-500/5 flex items-center justify-between">
+            <div>
+              <div class="font-mono font-bold text-slate-800 dark:text-slate-100">${formatDateDisplay(item.date)} · <span class="text-rose-500">${item.boards}连板成功</span></div>
+              ${item.kawei ? `<div class="mt-1 text-amber-600 dark:text-amber-400 font-semibold">${item.kawei}</div>` : ''}
+            </div>
+            <div class="font-mono text-xs px-2 py-1 rounded bg-rose-600 text-white font-bold">封板 ${item.time}</div>
+          </div>
+        `;
+      } else {
+        return `
+          <div class="p-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 flex items-center justify-between">
+            <div>
+              <div class="font-mono font-bold text-emerald-600 dark:text-emerald-400">${formatDateDisplay(item.date)} · 高位断板 (${item.yesterday_boards}进${item.yesterday_boards+1}失败)</div>
+              <div class="text-slate-500 mt-0.5">成为当日高位分歧风向标</div>
+            </div>
+            <div class="font-mono text-xs px-2 py-1 rounded bg-emerald-600 text-white font-bold">断板 ${item.time}</div>
+          </div>
+        `;
+      }
+    }).join('') || '<div class="text-slate-400">暂无该股近5日记录</div>';
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+  }
+
+  // CSV 导出功能
+  function exportCSV() {
+    const latestDate = sortedDates[sortedDates.length - 1];
+    if (!latestDate) return;
+    const rows = [['日期', '股票代码', '股票名称', '状态', '连板高度', '封板/断板时间', '所属题材', '同刻卡位标记']];
+
+    (rawData[latestDate].limit_up || []).forEach(s => {
+      rows.push([latestDate, s.code, s.name, '涨停', `${s.boards}板`, s.time, s.sector, s.kawei_target || '']);
+    });
+    (rawData[latestDate].broken_high || []).forEach(b => {
+      rows.push([latestDate, b.code, b.name, '高位断板', `昨${b.yesterday_boards}板断`, b.break_time, b.sector, '高位分歧源']);
+    });
+
+    const csvContent = '\uFEFF' + rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `A股主板涨停卡位复盘_${latestDate}.csv`;
+    link.click();
+  }
+
+  // 事件绑定
+  document.getElementById('search-input').addEventListener('input', renderMatrix);
+  document.getElementById('sector-filter').addEventListener('change', renderMatrix);
+  document.getElementById('btn-only-kawei').addEventListener('click', (e) => {
+    onlyKawei = !onlyKawei;
+    e.target.classList.toggle('bg-amber-500', onlyKawei);
+    e.target.classList.toggle('text-white', onlyKawei);
+    renderMatrix();
+  });
+  document.getElementById('btn-reload').addEventListener('click', loadData);
+  document.getElementById('btn-export-csv').addEventListener('click', exportCSV);
+  document.getElementById('btn-theme').addEventListener('click', () => {
+    document.documentElement.classList.toggle('dark');
+  });
+  document.getElementById('modal-close').addEventListener('click', () => {
+    document.getElementById('detail-modal').classList.add('hidden');
+    document.getElementById('detail-modal').classList.remove('flex');
+  });
+  document.getElementById('detail-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'detail-modal') {
+      e.target.classList.add('hidden');
+      e.target.classList.remove('flex');
+    }
+  });
+  window.addEventListener('resize', () => {
+    if (activeCode) drawConnectors(activeCode);
+  });
+
+  // 初始化
+  loadData();
+</script>
+</body>
+</html>
